@@ -12,13 +12,13 @@ import (
 
 func main() {
 	bybit := Platform{
-		Name:   "bybit",
-		ApiUrl: "https://api.bytick.com/v5/market/tickers",
+		Name:   "gate",
+		ApiUrl: "https://api.gateio.ws/api/v4/spot/tickers",
 	}
 
 	//pairs := []string{"USDT", "USDC", "BUSD"}
 	for {
-		time.Sleep(time.Second)
+		time.Sleep(time.Millisecond * 500)
 		result, _ := bybit.spotData()
 		fmt.Println(result)
 
@@ -26,88 +26,108 @@ func main() {
 }
 
 func (p *Platform) spotData() (*map[string]float64, error) {
-	q := "category=spot"
+	q := ""
 	data, err := p.DoGetRequest(p.ApiUrl, q)
 	if err != nil {
 		return nil, fmt.Errorf("can't do getRequest to huobi API: %w", err)
 	}
-	var spotResponse SpotResponse
-	if err := json.Unmarshal(*data, &spotResponse); err != nil {
+
+	var list []ListType
+	if err := json.Unmarshal(*data, &list); err != nil {
 		return nil, fmt.Errorf("can't unmarshall: %w", err)
 	}
 
 	result := map[string]float64{}
-	//set := p.AllPairs
-	list := spotResponse.Result.List
+	//list := []ListType
 
-	//var dict = map[string]pair{}
-	part1 := "USDT"
+	token := "USDT"
 	for _, item1 := range list {
-		ok1 := strings.Contains(item1.Symbol, part1)
-		if ok1 {
-			symbol1 := item1.Symbol
-			price1, _ := strconv.ParseFloat(item1.Ask1Price, 64)
-			//log.Printf("ASK: %s, BID: %s", item1.Ask1Price, item1.Bid1Price)
-			part2 := strings.ReplaceAll(symbol1, part1, "")
+		item1 := item1
+		if strings.Contains(item1.CurrencyPair, token) {
 			for _, item2 := range list {
-				part3 := strings.ReplaceAll(item2.Symbol, part2, "")
-				forwardPair := part2 + part3
-				reversePair := part3 + part2
-
-				if item2.Symbol == forwardPair {
-					symbol2 := item2.Symbol
-					price2, _ := strconv.ParseFloat(item2.Bid1Price, 64)
-
-					for _, item3 := range list {
-						ok3 := item3.Symbol == part3+part1 || item3.Symbol == part1+part3
-						if ok3 {
-							symbol3 := item3.Symbol
-							price3, _ := strconv.ParseFloat(item3.Bid1Price, 64)
-
-							profit := 100/price1*price2*price3 - 100
-
-							if profit > 0 {
-								fmt.Print("----forward---- \n")
-								fmt.Printf("КРУГ: %s >>%s>>%s\n", symbol1, symbol2, symbol3)
-								fmt.Printf("ЦЕНЫ: %f >>%f>>%f\n", price1, price2, price3)
-								fmt.Printf("ПРОФИТ: %f \n", profit)
-								fmt.Print("--------- \n")
-							}
-
-						}
-
-					}
-				} else if item2.Symbol == reversePair {
-					symbol2 := item2.Symbol
-					price2, _ := strconv.ParseFloat(item2.Ask1Price, 64)
-
-					for _, item3 := range list {
-						ok3 := item3.Symbol == part3+part1 || item3.Symbol == part1+part3
-
-						if ok3 {
-							symbol3 := item3.Symbol
-							price3, _ := strconv.ParseFloat(item3.Bid1Price, 64)
-
-							profit := 100/price1/price2*price3 - 100
-
-							if profit > 0 {
-								fmt.Print("----reverse----\n")
-								fmt.Printf("КРУГ: %s >>%s>>%s\n", symbol1, symbol2, symbol3)
-								fmt.Printf("ЦЕНЫ: %f >>%f>>%f\n", price1, price2, price3)
-								fmt.Printf("ПРОФИТ: %f \n", profit)
-								fmt.Print("---------\n")
-							}
-
-						}
-
-					}
-				}
-
+				item2 := item2
+				go search(&list, token, &item1, &item2)
 			}
 
 		}
 	}
 	return &result, err
+
+}
+
+func search(list *[]ListType, token string, item1 *ListType, item2 *ListType) {
+	part1 := token
+	part2 := strings.ReplaceAll(item1.CurrencyPair, "_"+part1, "")
+
+	part3 := strings.ReplaceAll(item2.CurrencyPair, "_", "")
+	part3 = strings.ReplaceAll(part3, part2, "")
+
+	var price2 float64
+	var price3 float64
+
+	forwardPair := part2 + "_" + part3
+	reversePair := part3 + "_" + part2
+
+	if item2.CurrencyPair == forwardPair {
+
+		for _, item3 := range *list {
+			item3 := item3
+			go func() {
+				ok3 := item3.CurrencyPair == part3+"_"+part1
+				//|| item3.CurrencyPair == part1+"_"+part3
+				if ok3 {
+					price1, _ := strconv.ParseFloat(item1.LowestAsk, 64)
+					price2, _ = strconv.ParseFloat(item2.HighestBid, 64)
+					price3, _ = strconv.ParseFloat(item3.HighestBid, 64)
+
+					profit := 100/price1*price2*price3 - 100
+
+					if profit > 0 {
+						fmt.Print("----forward---- \n")
+						fmt.Printf("КРУГ: %s >>%s>>%s\n", item1.CurrencyPair, item2.CurrencyPair, item3.CurrencyPair)
+						fmt.Printf("ЦЕНЫ: %f >>%f>>%f\n", price1, price2, price3)
+						fmt.Printf("ПРОФИТ: %f \n", profit)
+						fmt.Print("--------- \n")
+					}
+
+				}
+			}()
+
+		}
+
+	} else if item2.CurrencyPair == reversePair {
+		//log.Printf("part1: %s, part2: %s, part3: %s", part1, part2, part3)
+
+		for _, item3 := range *list {
+			item3 := item3
+			go func() {
+				ok3 := item3.CurrencyPair == part3+"_"+part1
+				//|| item3.CurrencyPair == part1+"_"+part3
+				if ok3 {
+					price1, _ := strconv.ParseFloat(item1.LowestAsk, 64)
+					price2, _ = strconv.ParseFloat(item2.LowestAsk, 64)
+					price3, _ = strconv.ParseFloat(item3.HighestBid, 64)
+
+					profit := 100/price1/price2*price3 - 100
+
+					if profit > 0 {
+						fmt.Print("---reverse----\n")
+						fmt.Printf("КРУГ: %s >>%s>>%s\n", item1.CurrencyPair, item2.CurrencyPair, item3.CurrencyPair)
+						fmt.Printf("ЦЕНЫ: %f >>%f>>%f\n", price1, price2, price3)
+						fmt.Printf("ПРОФИТ: %f \n", profit)
+						fmt.Print("---------\n")
+					}
+
+				}
+
+			}()
+
+		}
+	}
+
+}
+
+func forwardPair(list []ListType, token string, item1 ListType, item2 ListType) {
 
 }
 
@@ -119,40 +139,22 @@ type pair struct {
 	bidSrize float64
 }
 
-type SpotResponse struct {
-	RetCode int    `json:"retCode"`
-	RetMsg  string `json:"retMsg"`
-	Result  struct {
-		Category string `json:"category"`
-		List     []struct {
-			Symbol                 string `json:"symbol"`
-			LastPrice              string `json:"lastPrice"`
-			IndexPrice             string `json:"indexPrice"`
-			MarkPrice              string `json:"markPrice"`
-			PrevPrice24H           string `json:"prevPrice24h"`
-			Price24HPcnt           string `json:"price24hPcnt"`
-			HighPrice24H           string `json:"highPrice24h"`
-			LowPrice24H            string `json:"lowPrice24h"`
-			PrevPrice1H            string `json:"prevPrice1h"`
-			OpenInterest           string `json:"openInterest"`
-			OpenInterestValue      string `json:"openInterestValue"`
-			Turnover24H            string `json:"turnover24h"`
-			Volume24H              string `json:"volume24h"`
-			FundingRate            string `json:"fundingRate"`
-			NextFundingTime        string `json:"nextFundingTime"`
-			PredictedDeliveryPrice string `json:"predictedDeliveryPrice"`
-			BasisRate              string `json:"basisRate"`
-			DeliveryFeeRate        string `json:"deliveryFeeRate"`
-			DeliveryTime           string `json:"deliveryTime"`
-			Ask1Size               string `json:"ask1Size"`
-			Bid1Price              string `json:"bid1Price"`
-			Ask1Price              string `json:"ask1Price"`
-			Bid1Size               string `json:"bid1Size"`
-		} `json:"list"`
-	} `json:"result"`
-	RetExtInfo struct {
-	} `json:"retExtInfo"`
-	Time int64 `json:"time"`
+type ListType struct {
+	CurrencyPair     string `json:"currency_pair"`
+	Last             string `json:"last"`
+	LowestAsk        string `json:"lowest_ask"`
+	HighestBid       string `json:"highest_bid"`
+	ChangePercentage string `json:"change_percentage"`
+	ChangeUtc0       string `json:"change_utc0"`
+	ChangeUtc8       string `json:"change_utc8"`
+	BaseVolume       string `json:"base_volume"`
+	QuoteVolume      string `json:"quote_volume"`
+	High24H          string `json:"high_24h"`
+	Low24H           string `json:"low_24h"`
+	EtfNetValue      string `json:"etf_net_value"`
+	EtfPreNetValue   string `json:"etf_pre_net_value"`
+	EtfPreTimestamp  int    `json:"etf_pre_timestamp"`
+	EtfLeverage      string `json:"etf_leverage"`
 }
 
 type Platform struct {
