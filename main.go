@@ -1,187 +1,187 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/gorilla/websocket"
 	"io"
+	"log"
 	"net/http"
+	"net/url"
 	"strconv"
-	"strings"
 	"time"
 )
 
-func main() {
-	bybit := Platform{
-		Name:   "gate",
-		ApiUrl: "https://api.gateio.ws/api/v4/spot/tickers",
-	}
-
-	//pairs := []string{"USDT", "USDC", "BUSD"}
-	for {
-		time.Sleep(time.Millisecond * 500)
-		result, _ := bybit.spotData()
-		fmt.Println(result)
-
-	}
+type Msg struct {
+	Time    int64    `json:"time"`
+	Channel string   `json:"channel"`
+	Event   string   `json:"event"`
+	Payload []string `json:"payload"`
+	Auth    *Auth    `json:"auth"`
 }
 
-func (p *Platform) spotData() (*map[string]float64, error) {
-	q := ""
-	data, err := p.DoGetRequest(p.ApiUrl, q)
+type Auth struct {
+	Method string `json:"method"`
+	KEY    string `json:"KEY"`
+	SIGN   string `json:"SIGN"`
+}
+
+const (
+	Key    = "YOUR_API_KEY"
+	Secret = "YOUR_API_SECRETY"
+)
+
+//func sign(channel, event string, t int64) string {
+//	message := fmt.Sprintf("channel=%s&event=%s&time=%d", channel, event, t)
+//	h2 := hmac.New(sha512.New, []byte(Secret))
+//	io.WriteString(h2, message)
+//	return hex.EncodeToString(h2.Sum(nil))
+//}
+//
+//func (msg *Msg) sign() {
+//	signStr := sign(msg.Channel, msg.Event, msg.Time)
+//	msg.Auth = &Auth{
+//		Method: "api_key",
+//		KEY:    Key,
+//		SIGN:   signStr,
+//	}
+//}
+
+func (msg *Msg) send(c *websocket.Conn) error {
+	msgByte, err := json.Marshal(msg)
 	if err != nil {
-		return nil, fmt.Errorf("can't do getRequest to huobi API: %w", err)
+		return err
 	}
+	return c.WriteMessage(websocket.TextMessage, msgByte)
+}
 
-	var list []ListType
-	if err := json.Unmarshal(*data, &list); err != nil {
-		return nil, fmt.Errorf("can't unmarshall: %w", err)
+func NewMsg(channel, event string, t int64, payload []string) *Msg {
+	return &Msg{
+		Time:    t,
+		Channel: channel,
+		Event:   event,
+		Payload: payload,
 	}
+}
 
-	result := map[string]float64{}
-	//list := []ListType
+type TickerData struct {
+	base           string
+	quote          string
+	fee            float64
+	minBaseAmount  float64
+	minQuoteAmount float64
+	askPrice       float64
+	askValue       float64
+	bidPrice       float64
+	bidValue       float64
+}
 
-	token := "USDT"
-	for _, item1 := range list {
-		item1 := item1
-		if strings.Contains(item1.CurrencyPair, token) {
-			for _, item2 := range list {
-				item2 := item2
-				go search(&list, token, &item1, &item2)
+type ResponseData struct {
+	Time    int    `json:"time"`
+	TimeMs  int64  `json:"time_ms"`
+	Channel string `json:"channel"`
+	Event   string `json:"event"`
+	Result  struct {
+		T  int64  `json:"t"`
+		U  int    `json:"u"`
+		S  string `json:"s"`
+		B  string `json:"b"`
+		B0 string `json:"B"`
+		A  string `json:"a"`
+		A0 string `json:"A"`
+	} `json:"result"`
+}
+
+func main() {
+	pairsUrl := "https://api.gateio.ws/api/v4/spot/currency_pairs"
+
+	resp, err := DoRequest(pairsUrl, "")
+	var responsePairs []Pair
+	json.Unmarshal(*resp, &responsePairs)
+	var pairs []string
+	tickers := map[string]TickerData{}
+
+	for _, item := range responsePairs {
+		if item.TradeStatus != "untradable" {
+			pairs = append(pairs, item.ID)
+
+			fee, _ := strconv.ParseFloat(item.Fee, 64)
+			minBaseAmount, _ := strconv.ParseFloat(item.MinBaseAmount, 64)
+			mibQuoteAmount, _ := strconv.ParseFloat(item.MinQuoteAmount, 64)
+			tickers[item.ID] = TickerData{
+				base:           item.Base,
+				quote:          item.Quote,
+				fee:            fee,
+				minQuoteAmount: mibQuoteAmount,
+				minBaseAmount:  minBaseAmount,
 			}
-
 		}
 	}
-	return &result, err
+	fmt.Println("Получение пар завершено...")
 
-}
+	u := url.URL{Scheme: "wss", Host: "api.gateio.ws", Path: "/ws/v4/"}
+	websocket.DefaultDialer.TLSClientConfig = &tls.Config{RootCAs: nil, InsecureSkipVerify: true}
+	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		log.Fatal(err)
 
-func search(list *[]ListType, token string, item1 *ListType, item2 *ListType) {
-	part1 := token
-	part2 := strings.ReplaceAll(item1.CurrencyPair, "_"+part1, "")
+	}
+	c.SetPingHandler(nil)
 
-	part3 := strings.ReplaceAll(item2.CurrencyPair, "_", "")
-	part3 = strings.ReplaceAll(part3, part2, "")
+	// read msg
+	go func() {
+		for {
+			_, message, err := c.ReadMessage()
+			if err != nil {
+				c.Close()
+				log.Fatal(err)
 
-	var price2 float64
-	var price3 float64
+			}
+			var response ResponseData
+			json.Unmarshal(message, &response)
+			askPrice, _ := strconv.ParseFloat(response.Result.A, 64)
+			askValue, _ := strconv.ParseFloat(response.Result.A0, 64)
+			bidPrice, _ := strconv.ParseFloat(response.Result.B, 64)
+			bidValue, _ := strconv.ParseFloat(response.Result.B0, 64)
 
-	forwardPair := part2 + "_" + part3
-	reversePair := part3 + "_" + part2
-
-	if item2.CurrencyPair == forwardPair {
-
-		for _, item3 := range *list {
-			item3 := item3
-			go func() {
-				ok3 := item3.CurrencyPair == part3+"_"+part1
-				//|| item3.CurrencyPair == part1+"_"+part3
-				if ok3 {
-					price1, _ := strconv.ParseFloat(item1.LowestAsk, 64)
-					price2, _ = strconv.ParseFloat(item2.HighestBid, 64)
-					price3, _ = strconv.ParseFloat(item3.HighestBid, 64)
-
-					profit := 100/price1*price2*price3 - 100
-
-					if profit > 0 {
-						fmt.Print("----forward---- \n")
-						fmt.Printf("КРУГ: %s >>%s>>%s\n", item1.CurrencyPair, item2.CurrencyPair, item3.CurrencyPair)
-						fmt.Printf("ЦЕНЫ: %f >>%f>>%f\n", price1, price2, price3)
-						fmt.Printf("ПРОФИТ: %f \n", profit)
-						fmt.Print("--------- \n")
-					}
-
-				}
-			}()
-
+			pair := tickers[response.Result.S]
+			pair.askPrice = askPrice
+			pair.askValue = askValue
+			pair.bidPrice = bidPrice
+			pair.bidValue = bidValue
+			tickers[response.Result.S] = pair
+			fmt.Printf("recv: %+v\n", tickers[response.Result.S])
 		}
+	}()
 
-	} else if item2.CurrencyPair == reversePair {
-		//log.Printf("part1: %s, part2: %s, part3: %s", part1, part2, part3)
+	t := time.Now().Unix()
 
-		for _, item3 := range *list {
-			item3 := item3
-			go func() {
-				ok3 := item3.CurrencyPair == part3+"_"+part1
-				//|| item3.CurrencyPair == part1+"_"+part3
-				if ok3 {
-					price1, _ := strconv.ParseFloat(item1.LowestAsk, 64)
-					price2, _ = strconv.ParseFloat(item2.LowestAsk, 64)
-					price3, _ = strconv.ParseFloat(item3.HighestBid, 64)
+	// subscribe positions
+	ordersMsg := NewMsg("spot.book_ticker", "subscribe", t, []string{"BTC_USDT"})
+	err = ordersMsg.send(c)
+	if err != nil {
+		log.Fatal(err)
 
-					profit := 100/price1/price2*price3 - 100
-
-					if profit > 0 {
-						fmt.Print("---reverse----\n")
-						fmt.Printf("КРУГ: %s >>%s>>%s\n", item1.CurrencyPair, item2.CurrencyPair, item3.CurrencyPair)
-						fmt.Printf("ЦЕНЫ: %f >>%f>>%f\n", price1, price2, price3)
-						fmt.Printf("ПРОФИТ: %f \n", profit)
-						fmt.Print("---------\n")
-					}
-
-				}
-
-			}()
-
-		}
 	}
 
+	select {}
 }
 
-func forwardPair(list []ListType, token string, item1 ListType, item2 ListType) {
-
-}
-
-type pair struct {
-	Symbol   string
-	askPrice float64
-	bidPrice float64
-	askSize  float64
-	bidSrize float64
-}
-
-type ListType struct {
-	CurrencyPair     string `json:"currency_pair"`
-	Last             string `json:"last"`
-	LowestAsk        string `json:"lowest_ask"`
-	HighestBid       string `json:"highest_bid"`
-	ChangePercentage string `json:"change_percentage"`
-	ChangeUtc0       string `json:"change_utc0"`
-	ChangeUtc8       string `json:"change_utc8"`
-	BaseVolume       string `json:"base_volume"`
-	QuoteVolume      string `json:"quote_volume"`
-	High24H          string `json:"high_24h"`
-	Low24H           string `json:"low_24h"`
-	EtfNetValue      string `json:"etf_net_value"`
-	EtfPreNetValue   string `json:"etf_pre_net_value"`
-	EtfPreTimestamp  int    `json:"etf_pre_timestamp"`
-	EtfLeverage      string `json:"etf_leverage"`
-}
-
-type Platform struct {
-	Name         string            `json:"platform_name"`
-	Url          string            `json:"url"`
-	ApiUrl       string            `json:"api_url"`
-	Tokens       []string          `json:"platform_tokens"`
-	TokensDict   map[string]string `json:"tokens_dict"`
-	TradeTypes   []string          `json:"trade_types"`
-	PayTypesDict map[string]string `json:"pay_types_dict"`
-	AllPairs     map[string]bool   `json:"all_tokens"`
-	Client       http.Client
-}
-
-func (p *Platform) DoGetRequest(urlAdd string, encodeQuery string) (*[]byte, error) {
+func DoRequest(urlAdd string, encodeQuery string) (*[]byte, error) {
+	Client := http.Client{}
 	req, err := http.NewRequest(http.MethodGet, urlAdd, nil)
 	if encodeQuery != "" {
 		req.URL.RawQuery = encodeQuery
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("can't do get request (%s): %w", p.Name, err)
+		return nil, fmt.Errorf("can't do get request (%s): %w", "gate", err)
 	}
 
-	resp, err := p.Client.Do(req)
+	resp, err := Client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("can't get resposnse from DoGetRequest (%s): %w", p.Name, err)
+		return nil, fmt.Errorf("can't get resposnse from DoGetRequest (%s): %w", "gate", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
@@ -191,3 +191,31 @@ func (p *Platform) DoGetRequest(urlAdd string, encodeQuery string) (*[]byte, err
 
 	return &body, err
 }
+
+type Pair struct {
+	ID              string `json:"id"`
+	Base            string `json:"base"`
+	Quote           string `json:"quote"`
+	Fee             string `json:"fee"`
+	MinQuoteAmount  string `json:"min_quote_amount"`
+	MinBaseAmount   string `json:"min_base_amount"`
+	AmountPrecision int    `json:"amount_precision"`
+	Precision       int    `json:"precision"`
+	TradeStatus     string `json:"trade_status"`
+	SellStart       int    `json:"sell_start"`
+	BuyStart        int    `json:"buy_start"`
+}
+
+//pingMsg := NewMsg("spot.ping", "", t, []string{})
+//err = pingMsg.send(c)
+//if err != nil {
+//	log.Fatal(err)
+//}
+
+//spot tickers
+//spotTickers := NewMsg("spot.tickers", "subscribe", t, []string{"BTC_USDT"})
+//err = spotTickers.send(c)
+//if err != nil {
+//	log.Fatal(err)
+//
+//}
