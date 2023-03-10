@@ -31,7 +31,7 @@ type TickerData struct {
 	bidValue       float64
 }
 
-type ResponseData struct {
+type tickersUpdateData struct {
 	Time    int    `json:"time"`
 	TimeMs  int64  `json:"time_ms"`
 	Channel string `json:"channel"`
@@ -44,6 +44,25 @@ type ResponseData struct {
 		B0 string `json:"B"`
 		A  string `json:"a"`
 		A0 string `json:"A"`
+	} `json:"result"`
+}
+
+type balanceUpdateData struct {
+	Time    int    `json:"time"`
+	TimeMs  int64  `json:"time_ms"`
+	Channel string `json:"channel"`
+	Event   string `json:"event"`
+	Result  []struct {
+		Timestamp    string `json:"timestamp"`
+		TimestampMs  string `json:"timestamp_ms"`
+		User         string `json:"user"`
+		Currency     string `json:"currency"`
+		Change       string `json:"change"`
+		Total        string `json:"total"`
+		Available    string `json:"available"`
+		Freeze       string `json:"freeze"`
+		FreezeChange string `json:"freeze_change"`
+		ChangeType   string `json:"change_type"`
 	} `json:"result"`
 }
 
